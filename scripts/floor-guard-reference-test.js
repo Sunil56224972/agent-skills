@@ -225,20 +225,58 @@ test('floor guard: renaming a test file to another test name is silent', () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
-test('floor guard: renaming the test directory from test/ to tests/ is silent', () => {
+test('floor guard: moving a test into __tests__/ is silent', () => {
   const root = makeRepo();
-  fs.mkdirSync(path.join(root, 'test'));
-  fs.writeFileSync(path.join(root, 'test', 'legacy.js'), 'assert(true);\n');
-  git(root, 'add', 'test/legacy.js');
-  git(root, 'commit', '-qm', 'add legacy test');
-  git(root, 'mv', 'test', 'tests');
+  fs.mkdirSync(path.join(root, '__tests__'));
+  git(root, 'mv', 'app.test.js', '__tests__/app.js');
   const result = runGuard(root);
   assert.equal(result.status, 0, result.stderr);
 });
 
-test('floor guard: a large untracked binary does not overflow the diff buffer', () => {
+test('floor guard: moving a test into spec/ with an _spec name is silent', () => {
   const root = makeRepo();
-  fs.writeFileSync(path.join(root, 'artifact.bin'), Buffer.alloc(2 * 1024 * 1024));
+  fs.mkdirSync(path.join(root, 'spec'));
+  git(root, 'mv', 'app.test.js', 'spec/app_spec.js');
+  const result = runGuard(root);
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('floor guard: deleting a fixture under test/ is not a deleted test', () => {
+  const root = makeRepo();
+  fs.mkdirSync(path.join(root, 'test', 'fixtures'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'test', 'fixtures', 'data.json'), '{"sample":true}\n');
+  git(root, 'add', 'test/fixtures/data.json');
+  git(root, 'commit', '-qm', 'add test fixture');
+  fs.unlinkSync(path.join(root, 'test', 'fixtures', 'data.json'));
+  const result = runGuard(root);
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('floor guard: a 9 MiB untracked binary does not overflow the diff buffer', () => {
+  const root = makeRepo();
+  fs.writeFileSync(path.join(root, 'artifact.bin'), Buffer.alloc(9 * 1024 * 1024));
+  const result = runGuard(root);
+  assert.equal(result.status, 0, `expected clean, got ${result.status}\n${result.stderr}`);
+});
+
+test('floor guard: a 9 MiB modified binary does not overflow the diff buffer', () => {
+  const root = makeRepo();
+  const artifact = path.join(root, 'artifact.bin');
+  fs.writeFileSync(artifact, Buffer.alloc(9 * 1024 * 1024));
+  git(root, 'add', 'artifact.bin');
+  git(root, 'commit', '-qm', 'add binary artifact');
+  const modified = Buffer.alloc(9 * 1024 * 1024);
+  modified[0] = 1;
+  fs.writeFileSync(artifact, modified);
+  const result = runGuard(root);
+  assert.equal(result.status, 0, `expected clean, got ${result.status}\n${result.stderr}`);
+});
+
+test('floor guard: five 2 MiB untracked binaries do not overflow the aggregate diff', () => {
+  const root = makeRepo();
+  for (let i = 0; i < 5; i++) {
+    fs.writeFileSync(path.join(root, `artifact-${i}.bin`), Buffer.alloc(2 * 1024 * 1024));
+  }
   const result = runGuard(root);
   assert.equal(result.status, 0, `expected clean, got ${result.status}\n${result.stderr}`);
 });
@@ -251,6 +289,17 @@ test('floor guard: TODO bytes in an untracked binary are not unfinished work', (
   );
   const result = runGuard(root);
   assert.equal(result.status, 0, result.stderr);
+});
+
+test('floor guard: a suppression after a late NUL byte is still detected', () => {
+  const root = makeRepo();
+  fs.writeFileSync(
+    path.join(root, 'late-nul.js'),
+    Buffer.concat([Buffer.alloc(8192, 0x61), Buffer.from([0]), Buffer.from('\n// @ts-ignore\n')]),
+  );
+  const result = runGuard(root);
+  assert.equal(result.status, 1, `expected violation, got ${result.status}\n${result.stderr}`);
+  assert.match(result.stderr, /\[silenced-checker\] late-nul\.js:/);
 });
 
 test('floor guard: a removed exception row is silent', () => {
